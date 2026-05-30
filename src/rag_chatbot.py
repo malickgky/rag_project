@@ -56,7 +56,7 @@ def extract_text_from_pdfs(pdf_files) -> str:
     return full_text
 
 
-def build_vector_store(text: str) -> Chroma:
+def build_vector_store(text: str) -> tuple[Chroma, int]:
     """Découpe le texte, crée les embeddings et stocke dans ChromaDB."""
     splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
         chunk_size=CHUNK_SIZE,

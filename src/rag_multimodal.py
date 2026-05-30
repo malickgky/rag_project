@@ -25,6 +25,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from openai import OpenAI
 from dotenv import load_dotenv
+import pytesseract  # OCR sur les images embarquées
 
 load_dotenv(override=True)
 
@@ -74,9 +75,30 @@ def describe_image_with_gpt4v(image: Image.Image, page_num: int) -> str:
     return response.choices[0].message.content
 
 
+def extract_embedded_images_ocr(pdf_bytes: bytes, pdf_name: str) -> list:
+    """Extrait les images embarquées dans le PDF et retourne leur texte OCR."""
+    items = []
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    for i, page in enumerate(reader.pages):
+        for img_obj in page.images:
+            try:
+                image = Image.open(io.BytesIO(img_obj.data))
+                ocr_text = pytesseract.image_to_string(image, lang="fra+eng").strip()
+                if ocr_text:
+                    items.append({
+                        "type": "ocr_text",
+                        "content": f"[OCR image] {ocr_text}",
+                        "source": pdf_name,
+                        "page": i + 1,
+                    })
+            except Exception:
+                pass
+    return items
+
+
 def extract_multimodal_content(pdf_bytes: bytes, pdf_name: str, describe_images: bool = True):
     """
-    Extrait texte + descriptions d'images d'un PDF.
+    Extrait texte + OCR des images embarquées + descriptions visuelles d'un PDF.
     Retourne une liste de dicts : {type, content, source, page}.
     """
     items = []
@@ -93,11 +115,21 @@ def extract_multimodal_content(pdf_bytes: bytes, pdf_name: str, describe_images:
                 "page": i + 1,
             })
 
+    # ── OCR sur les images embarquées ──────────────────────────────────────
+    items.extend(extract_embedded_images_ocr(pdf_bytes, pdf_name))
+
     # ── Images (rasterisation des pages) ──────────────────────────────────
     if describe_images:
-        pages_as_images = convert_from_bytes(pdf_bytes, dpi=150)
+        try:
+            pages_as_images = convert_from_bytes(pdf_bytes, dpi=150)
+        except Exception as e:
+            err_msg = str(e)
+            st.warning(
+                f"⚠️ Impossible de rasteriser les pages PDF ({pdf_name}) : {err_msg}\n"
+                "Installez Poppler et ajoutez-le au PATH pour activer la description visuelle."
+            )
+            return items
         for page_num, page_img in enumerate(pages_as_images, start=1):
-            # Redimensionner pour économiser des tokens
             page_img.thumbnail((1200, 1600))
             description = describe_image_with_gpt4v(page_img, page_num)
             items.append({
@@ -312,7 +344,7 @@ def main():
             if msg.get("sources"):
                 with st.expander(f"📄 {len(msg['sources'])} source(s) utilisée(s)"):
                     for src in msg["sources"]:
-                        icon = "🖼️" if src["type"] == "image_description" else "📝"
+                        icon = "🖼️" if src["type"] == "image_description" else ("🔍" if src["type"] == "ocr_text" else "📝")
                         st.markdown(
                             f"{icon} **{src['source']}** — page {src['page']}"
                         )
@@ -374,7 +406,7 @@ def main():
 
                 with st.expander(f"📄 {len(sources)} source(s) utilisée(s)"):
                     for src in sources:
-                        icon = "🖼️" if src["type"] == "image_description" else "📝"
+                        icon = "🖼️" if src["type"] == "image_description" else ("🔍" if src["type"] == "ocr_text" else "📝")
                         st.markdown(f"{icon} **{src['source']}** — page {src['page']}")
                         st.text(src["content"][:300] + "…")
 
